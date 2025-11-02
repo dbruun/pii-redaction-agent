@@ -1,0 +1,79 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "PII Redaction Agent";
+}
+
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+            <div class="text-center mb-5">
+                <h1 class="display-4 mb-3">
+                    <i class="bi bi-shield-lock text-primary"></i>
+                    PII Redaction Agent
+                </h1>
+                <p class="lead text-muted">
+                    Protect sensitive information with AI-powered PII detection and redaction
+                </p>
+            </div>
+
+            <div class="card shadow-lg">
+                <div class="card-body p-5">
+                    <h3 class="card-title mb-4">How It Works</h3>
+                    
+                    <div class="row mb-4">
+                        <div class="col-md-4 text-center">
+                            <div class="mb-3">
+                                <i class="bi bi-upload text-primary" style="font-size: 3rem;"></i>
+                            </div>
+                            <h5>1. Upload</h5>
+                            <p class="text-muted">Upload a document or paste text containing PII</p>
+                        </div>
+                        <div class="col-md-4 text-center">
+                            <div class="mb-3">
+                                <i class="bi bi-robot text-primary" style="font-size: 3rem;"></i>
+                            </div>
+                            <h5>2. AI Analysis</h5>
+                            <p class="text-muted">Our AI agent identifies and redacts sensitive information</p>
+                        </div>
+                        <div class="col-md-4 text-center">
+                            <div class="mb-3">
+                                <i class="bi bi-download text-primary" style="font-size: 3rem;"></i>
+                            </div>
+                            <h5>3. Download</h5>
+                            <p class="text-muted">Review and download the redacted document</p>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-info">
+                        <strong>Protected Information Types:</strong>
+                        <ul class="mb-0 mt-2">
+                            <li>Names and personal identifiers</li>
+                            <li>Email addresses and phone numbers</li>
+                            <li>Social Security Numbers (SSN)</li>
+                            <li>Credit card and bank account numbers</li>
+                            <li>Addresses and geographic information</li>
+                            <li>Medical and employment records</li>
+                        </ul>
+                    </div>
+
+                    <div class="text-center mt-4">
+                        <a href="/Upload" class="btn btn-primary btn-lg px-5">
+                            <i class="bi bi-shield-check"></i> Start Redacting
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="text-center mt-4">
+                <p class="text-muted">
+                    <small>Powered by Azure AI Foundry and Microsoft Agentic Framework</small>
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Styles {
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+}
