@@ -1,19 +1,30 @@
 # PII Redaction Agent Web Application
 
-A .NET 9.0 web application for detecting and redacting Personally Identifiable Information (PII) from documents using Azure AI Foundry and Microsoft's Agentic Framework (successor to Semantic Kernel).
+A .NET 9.0 web application for detecting and redacting Personally Identifiable Information (PII) from documents using **Azure AI Language Native Document PII API** with Azure Blob Storage integration.
 
 ## Features
 
-- **AI-Powered PII Detection**: Uses Azure OpenAI through the Microsoft.Extensions.AI (Agentic Framework) to intelligently detect and redact PII
-- **Multiple Input Methods**: Upload documents or paste text directly
+- **Native Document PII API**: Uses Azure's Native Document PII API that preserves document formatting during redaction
+- **Azure Blob Storage Integration**: Secure document storage with SAS token-based access
+- **Async Job Processing**: Submit analysis jobs and poll for completion
+- **Entra ID Authentication**: Supports Managed Identity and DefaultAzureCredential for secure, passwordless authentication
+- **Document Upload**: Upload PDF, DOCX, or TXT files up to 10MB
+- **Format Preservation**: Original document formatting maintained in redacted output
 - **Visual Verification**: Side-by-side comparison of original and redacted text
-- **Comprehensive PII Coverage**: Detects names, emails, phone numbers, SSNs, addresses, and more
+- **Comprehensive PII Coverage**: Detects 20+ entity categories including names, emails, phone numbers, SSNs, addresses, and more
 - **Download Capability**: Export redacted documents
 - **Azure Container Apps Ready**: Includes Dockerfile for easy deployment
 
-## Detected PII Types
+## Supported Document Formats
 
-- Names (full names, first names, last names)
+- **PDF** (.pdf) - Native document processing (formatting preserved)
+- **Microsoft Word** (.docx) - Native document processing (formatting preserved)
+- **Plain Text** (.txt) - Direct text processing
+- **Maximum file size**: 10MB per document (up to 40 documents per request)
+
+## Detected PII Types (20+ categories)
+
+- Names (Person, PersonType)
 - Email addresses
 - Phone numbers
 - Social Security Numbers (SSN)
@@ -23,24 +34,46 @@ A .NET 9.0 web application for detecting and redacting Personally Identifiable I
 - Driver's license numbers
 - Passport numbers
 - Bank account numbers
-- IP addresses
+- IP addresses (IPv4, IPv6)
 - Medical record numbers
-- Employee IDs
+- Organization names
+- URLs
+- And more...
 
 ## Prerequisites
 
 - .NET 9.0 SDK
-- Azure subscription with Azure OpenAI or Azure AI Foundry access
+- Azure subscription with:
+  - **Azure AI Language** resource with Native Document PII API enabled (required)
+  - **Azure Blob Storage** account for document processing (required)
 - Docker (for containerization)
 - Azure CLI (for deployment to ACA)
 
+**Note:** Both Azure AI Language and Azure Blob Storage are **required** for this application to function.
+
 ## Configuration
 
-### Azure AI Setup
+### Azure Resources Setup
 
-1. Create an Azure OpenAI resource or Azure AI Foundry project
-2. Deploy a GPT-4 or GPT-3.5 model
-3. Get your endpoint URL and API key
+**Step 1: Azure AI Language Resource**
+1. Create an Azure AI Language resource in Azure Portal
+2. Ensure the region supports Native Document PII API (2024-11-15-preview)
+3. Get your Language endpoint from Keys and Endpoint section
+4. Note: Native Document PII API requires API version `2024-11-15-preview`
+
+**Step 2: Azure Blob Storage Account**
+1. Create an Azure Storage account
+2. The application will automatically create two containers:
+   - `source-documents` - For uploaded documents
+   - `redacted-documents` - For PII-redacted output
+3. Get your Storage connection string from Access Keys section
+
+**Step 3: Authentication Setup (Recommended: Managed Identity)**
+1. For production, enable Managed Identity on your app
+2. Assign the following RBAC roles:
+   - **Cognitive Services User** on the Language resource
+   - **Storage Blob Data Contributor** on the Storage account
+3. For development, use Azure CLI or connection strings
 
 ### Application Configuration
 
@@ -48,20 +81,34 @@ Update `appsettings.json` or use environment variables:
 
 ```json
 {
-  "AzureAI": {
-    "Endpoint": "https://your-resource.openai.azure.com/",
-    "ApiKey": "your-api-key",
-    "DeploymentName": "gpt-4",
-    "UseAzureIdentity": false
+  "AzureLanguage": {
+    "Endpoint": "https://your-language-resource.cognitiveservices.azure.com/",
+    "ApiKey": "",
+    "UseAzureIdentity": true
+  },
+  "AzureStorage": {
+    "ConnectionString": "DefaultEndpointsProtocol=https;AccountName=your-storage;...",
+    "SourceContainerName": "source-documents",
+    "TargetContainerName": "redacted-documents",
+    "UseAzureIdentity": true
   }
 }
 ```
 
 **Environment Variables** (recommended for production):
-- `AzureAI__Endpoint`: Your Azure OpenAI endpoint
-- `AzureAI__ApiKey`: Your API key (or use Managed Identity)
-- `AzureAI__DeploymentName`: Model deployment name
-- `AzureAI__UseAzureIdentity`: Set to `true` to use Managed Identity
+
+**Azure AI Language:**
+- `AzureLanguage__Endpoint`: Your Azure AI Language endpoint
+- `AzureLanguage__ApiKey`: Your API key (only if not using Entra ID)
+- `AzureLanguage__UseAzureIdentity`: Set to `true` to use Entra ID/Managed Identity (recommended)
+
+**Azure Blob Storage:**
+- `AzureStorage__ConnectionString`: Your Storage account connection string
+- `AzureStorage__SourceContainerName`: Container for source documents (default: `source-documents`)
+- `AzureStorage__TargetContainerName`: Container for redacted documents (default: `redacted-documents`)
+- `AzureStorage__UseAzureIdentity`: Set to `true` to use Managed Identity for Storage (recommended)
+
+**Note:** Azure Storage configuration is required for the application to function.
 
 ## Local Development
 
@@ -79,9 +126,9 @@ Navigate to `https://localhost:5001` or `http://localhost:5000`
 ```bash
 docker build -t pii-redaction-app .
 docker run -p 8080:8080 \
-  -e AzureAI__Endpoint="https://your-resource.openai.azure.com/" \
-  -e AzureAI__ApiKey="your-api-key" \
-  -e AzureAI__DeploymentName="gpt-4" \
+  -e AzureLanguage__Endpoint="https://your-resource.cognitiveservices.azure.com/" \
+  -e AzureLanguage__ApiKey="your-api-key" \
+  -e AzureLanguage__UseAzureIdentity="false" \
   pii-redaction-app
 ```
 
@@ -170,8 +217,6 @@ az containerapp update \
 
 ## Architecture
 
-The application uses the following architecture:
-
 ```
 ┌─────────────────┐
 │   Web UI        │
@@ -179,30 +224,28 @@ The application uses the following architecture:
 └────────┬────────┘
          │
          ▼
-┌─────────────────────────┐
-│ PiiRedactionService     │
-│ (Business Logic)        │
-└────────┬────────────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ Microsoft.Extensions.AI │
-│ (Agentic Framework)     │
-└────────┬────────────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│   Azure OpenAI API      │
-│ (AI Foundry/OpenAI)     │
-└─────────────────────────┘
+┌──────────────────────────────┐
+│ NativeDocumentPiiService     │
+│ 1. Upload to Blob Storage    │
+│ 2. Submit analysis job       │
+│ 3. Poll job status           │
+│ 4. Download redacted doc     │
+└────┬─────────────────────┬───┘
+     │                     │
+     ▼                     ▼
+┌─────────────────┐   ┌─────────────────────────┐
+│ Azure Blob      │   │ Azure AI Language       │
+│ Storage         │   │ Native Document PII API │
+│ (SAS tokens)    │   │ (REST, async jobs)      │
+└─────────────────┘   └─────────────────────────┘
 ```
 
 ## Technology Stack
 
 - **Framework**: ASP.NET Core 9.0 (Razor Pages)
-- **AI Framework**: Microsoft.Extensions.AI (Agentic Framework)
-- **AI Service**: Azure OpenAI / Azure AI Foundry
-- **Authentication**: Azure Identity (Managed Identity support)
+- **AI Service**: Azure AI Language Native Document PII API (2024-11-15-preview)
+- **Storage**: Azure Blob Storage 12.22.2 (with SAS tokens)
+- **Authentication**: Azure Identity 1.17.0 (DefaultAzureCredential, Managed Identity)
 - **Container**: Docker
 - **Deployment**: Azure Container Apps (ACA)
 
@@ -218,44 +261,68 @@ The application uses the following architecture:
 ## Usage
 
 1. Navigate to the application URL
-2. Click "Start Redacting"
-3. Either:
-   - Upload a text document (TXT, DOC, DOCX)
-   - Paste text directly into the text area
-4. Click "Redact PII"
-5. Review the detected PII entities and redacted text
-6. Download the redacted document if needed
+2. Click "Redact PII" in the navigation
+3. **Upload a document** (PDF, DOCX, or TXT up to 10MB)
+4. Click "Redact PII" button
+5. Review the results:
+   - Side-by-side comparison of original and redacted text
+   - Table of all detected PII entities with types and positions
+   - Document metadata (filename, size, processing time)
+6. Download the redacted document
 
 ## Project Structure
 
 ```
 PiiRedactionWebApp/
 ├── Pages/
-│   ├── Index.cshtml              # Home page
-│   ├── Upload.cshtml             # Upload and redaction page
+│   ├── Index.cshtml                     # Home page
+│   ├── Upload.cshtml                    # Upload and redaction page
+│   ├── Upload.cshtml.cs                 # Upload page logic
 │   └── Shared/
-│       └── _Layout.cshtml        # Layout template
+│       └── _Layout.cshtml               # Layout template
 ├── Services/
-│   ├── IPiiRedactionService.cs   # Service interface
-│   ├── PiiRedactionService.cs    # AI-powered redaction implementation
-│   └── AzureAiOptions.cs         # Configuration model
-├── Program.cs                     # Application startup
-├── appsettings.json              # Configuration
-├── Dockerfile                     # Container definition
-└── README.md                      # This file
+│   ├── INativeDocumentPiiService.cs     # Native Document PII interface
+│   ├── NativeDocumentPiiService.cs      # Native Document PII implementation (async jobs)
+│   ├── DocumentRedactionResult.cs       # Result and entity models
+│   ├── DocumentPiiAnalysisJob.cs        # Native Document PII API response models
+│   ├── AzureAiOptions.cs                # Language service configuration
+│   └── AzureStorageOptions.cs           # Blob storage configuration
+├── Program.cs                            # Application startup and DI configuration
+├── appsettings.json                      # Configuration
+├── Dockerfile                            # Container definition
+├── README.md                             # This file
+├── DEPLOYMENT.md                         # Deployment guide
+└── NATIVE_DOCUMENT_PII_SETUP.md         # Azure setup guide
 ```
+
+## Documentation
+
+This repository includes comprehensive documentation:
+
+- **[README.md](README.md)** (this file) - Overview, features, and quick start
+- **[NATIVE_DOCUMENT_PII_SETUP.md](NATIVE_DOCUMENT_PII_SETUP.md)** - Complete Azure resource setup for Native Document PII API
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Azure Container Apps deployment guide
+- **[SECURITY.md](SECURITY.md)** - Security best practices and guidelines
 
 ## Troubleshooting
 
 ### Application fails to start
-- Verify Azure AI configuration is correct
-- Check that the deployment name matches your Azure OpenAI deployment
+- Verify Azure AI Language configuration is correct
+- Check that the endpoint URL is properly formatted
 - Ensure network connectivity to Azure
+- Verify Entra ID authentication is configured if UseAzureIdentity=true
 
 ### PII detection not working
-- Verify API key is valid
-- Check Azure OpenAI service is running
+- Verify API key is valid (if not using Entra ID)
+- Check Azure AI Language service is provisioned and running
 - Review application logs for errors
+- Ensure proper RBAC roles if using Managed Identity
+
+### Storage configuration errors
+- Verify Azure Storage connection string is set in appsettings.json
+- Check connection string format is valid
+- Ensure storage account is accessible
+- Review NATIVE_DOCUMENT_PII_SETUP.md for complete setup
 
 ### Container deployment issues
 - Ensure port 8080 is exposed

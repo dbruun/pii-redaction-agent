@@ -1,6 +1,6 @@
 # Deployment Guide for PII Redaction Web App
 
-This guide provides detailed instructions for deploying the PII Redaction Web Application to Azure Container Apps.
+This guide provides detailed instructions for deploying the PII Redaction Web Application to Azure Container Apps with Native Document PII API support.
 
 ## Prerequisites
 
@@ -9,64 +9,64 @@ Before you begin, ensure you have:
 1. Azure subscription
 2. Azure CLI installed and configured
 3. Docker installed (for local testing)
-4. Azure OpenAI or Azure AI Foundry resource with a deployed model
-5. Appropriate permissions to create resources in Azure
+4. Azure AI Language resource
+5. Azure Blob Storage account (for Native Document PII API)
+6. Appropriate permissions to create resources in Azure
 
-## Step 1: Prepare Azure OpenAI
+## Step 1: Prepare Azure Resources
 
-### Create Azure OpenAI Resource
+**Important:** For complete setup instructions including Native Document PII API, see [NATIVE_DOCUMENT_PII_SETUP.md](NATIVE_DOCUMENT_PII_SETUP.md).
+
+### Quick Setup for Azure Resources
 
 ```bash
 # Set variables
 LOCATION="eastus"
 RESOURCE_GROUP="rg-pii-redaction"
-OPENAI_RESOURCE_NAME="openai-pii-redaction"
+LANGUAGE_RESOURCE_NAME="lang-pii-redaction-$RANDOM"
+STORAGE_ACCOUNT_NAME="stpiiredact$RANDOM"
 
 # Create resource group
 az group create \
   --name $RESOURCE_GROUP \
   --location $LOCATION
 
-# Create Azure OpenAI resource
+# Create Azure AI Language resource
 az cognitiveservices account create \
-  --name $OPENAI_RESOURCE_NAME \
+  --name $LANGUAGE_RESOURCE_NAME \
   --resource-group $RESOURCE_GROUP \
-  --kind OpenAI \
-  --sku S0 \
-  --location $LOCATION
+  --kind TextAnalytics \
+  --sku S \
+  --location $LOCATION \
+  --yes
+
+# Create Azure Storage account (required for Native Document PII API)
+az storage account create \
+  --name $STORAGE_ACCOUNT_NAME \
+  --resource-group $RESOURCE_GROUP \
+  --location $LOCATION \
+  --sku Standard_LRS \
+  --kind StorageV2 \
+  --allow-blob-public-access false
 ```
 
-### Deploy a Model
+### Get Endpoint and Connection String
 
 ```bash
-# Deploy GPT-4 model
-az cognitiveservices account deployment create \
-  --name $OPENAI_RESOURCE_NAME \
-  --resource-group $RESOURCE_GROUP \
-  --deployment-name gpt-4 \
-  --model-name gpt-4 \
-  --model-version "0613" \
-  --model-format OpenAI \
-  --sku-capacity 10 \
-  --sku-name "Standard"
-```
-
-### Get Endpoint and Key
-
-```bash
-# Get endpoint
-OPENAI_ENDPOINT=$(az cognitiveservices account show \
-  --name $OPENAI_RESOURCE_NAME \
+# Get Language endpoint
+LANGUAGE_ENDPOINT=$(az cognitiveservices account show \
+  --name $LANGUAGE_RESOURCE_NAME \
   --resource-group $RESOURCE_GROUP \
   --query properties.endpoint -o tsv)
 
-# Get API key (for non-managed identity deployments)
-OPENAI_KEY=$(az cognitiveservices account keys list \
-  --name $OPENAI_RESOURCE_NAME \
+# Get Storage connection string
+STORAGE_CONNECTION_STRING=$(az storage account show-connection-string \
+  --name $STORAGE_ACCOUNT_NAME \
   --resource-group $RESOURCE_GROUP \
-  --query key1 -o tsv)
+  --query connectionString -o tsv)
 
-echo "Endpoint: $OPENAI_ENDPOINT"
+echo "Language Endpoint: $LANGUAGE_ENDPOINT"
+echo "Storage Account: $STORAGE_ACCOUNT_NAME"
 ```
 
 ## Step 2: Build and Push Docker Image
@@ -111,7 +111,7 @@ az containerapp env create \
 
 ## Step 4: Deploy Container App
 
-### Option A: Using API Key Authentication
+### Deploy with Managed Identity (Recommended)
 
 ```bash
 APP_NAME="app-pii-redaction"
@@ -120,6 +120,7 @@ APP_NAME="app-pii-redaction"
 ACR_USERNAME=$(az acr credential show --name $ACR_NAME --query username -o tsv)
 ACR_PASSWORD=$(az acr credential show --name $ACR_NAME --query passwords[0].value -o tsv)
 
+# Create the container app
 az containerapp create \
   --name $APP_NAME \
   --resource-group $RESOURCE_GROUP \
@@ -132,33 +133,8 @@ az containerapp create \
   --ingress external \
   --min-replicas 1 \
   --max-replicas 5 \
-  --cpu 0.5 \
-  --memory 1Gi \
-  --env-vars \
-    "AzureAI__Endpoint=$OPENAI_ENDPOINT" \
-    "AzureAI__ApiKey=$OPENAI_KEY" \
-    "AzureAI__DeploymentName=gpt-4" \
-    "AzureAI__UseAzureIdentity=false"
-```
-
-### Option B: Using Managed Identity (Recommended)
-
-```bash
-# Create the container app first without AI configuration
-az containerapp create \
-  --name $APP_NAME \
-  --resource-group $RESOURCE_GROUP \
-  --environment $ENVIRONMENT_NAME \
-  --image ${ACR_NAME}.azurecr.io/pii-redaction-app:latest \
-  --registry-server ${ACR_NAME}.azurecr.io \
-  --registry-username $ACR_USERNAME \
-  --registry-password $ACR_PASSWORD \
-  --target-port 8080 \
-  --ingress external \
-  --min-replicas 1 \
-  --max-replicas 5 \
-  --cpu 0.5 \
-  --memory 1Gi
+  --cpu 1.0 \
+  --memory 2Gi
 
 # Enable system-assigned managed identity
 az containerapp identity assign \
@@ -172,9 +148,14 @@ PRINCIPAL_ID=$(az containerapp identity show \
   --resource-group $RESOURCE_GROUP \
   --query principalId -o tsv)
 
-# Get the OpenAI resource ID
-OPENAI_RESOURCE_ID=$(az cognitiveservices account show \
-  --name $OPENAI_RESOURCE_NAME \
+# Get resource IDs
+LANGUAGE_RESOURCE_ID=$(az cognitiveservices account show \
+  --name $LANGUAGE_RESOURCE_NAME \
+  --resource-group $RESOURCE_GROUP \
+  --query id -o tsv)
+
+STORAGE_RESOURCE_ID=$(az storage account show \
+  --name $STORAGE_ACCOUNT_NAME \
   --resource-group $RESOURCE_GROUP \
   --query id -o tsv)
 
@@ -182,16 +163,28 @@ OPENAI_RESOURCE_ID=$(az cognitiveservices account show \
 az role assignment create \
   --role "Cognitive Services User" \
   --assignee $PRINCIPAL_ID \
-  --scope $OPENAI_RESOURCE_ID
+  --scope $LANGUAGE_RESOURCE_ID
 
-# Update container app with managed identity configuration
+# Assign Storage roles (required for Native Document PII API)
+az role assignment create \
+  --role "Storage Blob Data Contributor" \
+  --assignee $PRINCIPAL_ID \
+  --scope $STORAGE_RESOURCE_ID
+
+az role assignment create \
+  --role "Storage Account Contributor" \
+  --assignee $PRINCIPAL_ID \
+  --scope $STORAGE_RESOURCE_ID
+
+# Update container app with configuration
 az containerapp update \
   --name $APP_NAME \
   --resource-group $RESOURCE_GROUP \
   --set-env-vars \
-    "AzureAI__Endpoint=$OPENAI_ENDPOINT" \
-    "AzureAI__DeploymentName=gpt-4" \
-    "AzureAI__UseAzureIdentity=true"
+    "AzureLanguage__Endpoint=$LANGUAGE_ENDPOINT" \
+    "AzureLanguage__UseAzureIdentity=true" \
+    "AzureStorage__ConnectionString=AccountName=$STORAGE_ACCOUNT_NAME" \
+    "AzureStorage__UseAzureIdentity=true"
 ```
 
 ## Step 5: Configure Custom Domain (Optional)
@@ -349,11 +342,23 @@ az group delete \
   --no-wait
 ```
 
+## Document Format Support
+
+The application uses the **Native Document PII API** exclusively:
+
+- **PDF files** (.pdf) - Formatting preserved
+- **Word documents** (.docx) - Formatting preserved  
+- **Plain text** (.txt) - Direct processing
+- Maximum: 10MB per document, 40 documents per batch
+- Requires: Azure Blob Storage (mandatory)
+
 ## Additional Resources
 
+- [Native Document PII Setup Guide](NATIVE_DOCUMENT_PII_SETUP.md)
 - [Azure Container Apps Documentation](https://learn.microsoft.com/azure/container-apps/)
-- [Azure OpenAI Documentation](https://learn.microsoft.com/azure/cognitive-services/openai/)
-- [Microsoft.Extensions.AI Documentation](https://learn.microsoft.com/dotnet/ai/)
+- [Azure AI Language Documentation](https://learn.microsoft.com/azure/ai-services/language-service/)
+- [Native Document PII API](https://learn.microsoft.com/azure/ai-services/language-service/personally-identifiable-information/how-to/redact-document-pii)
+- [Azure Blob Storage Documentation](https://learn.microsoft.com/azure/storage/blobs/)
 
 ## Support
 

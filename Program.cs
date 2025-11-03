@@ -1,5 +1,5 @@
 using Azure.Identity;
-using Microsoft.Extensions.AI;
+using Azure.Storage.Blobs;
 using PiiRedactionWebApp.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -7,44 +7,70 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddRazorPages();
 
-// Configure Azure AI options
+// Configure Azure Language options (for Native Document PII API)
 builder.Services.Configure<AzureAiOptions>(
     builder.Configuration.GetSection(AzureAiOptions.SectionName));
 
-// Register AI Chat Client using Microsoft.Extensions.AI (Agentic Framework)
-var azureAiConfig = builder.Configuration.GetSection(AzureAiOptions.SectionName).Get<AzureAiOptions>();
+// Configure Azure Storage options (required for Native Document PII API)
+builder.Services.Configure<AzureStorageOptions>(
+    builder.Configuration.GetSection("AzureStorage"));
 
-if (azureAiConfig != null && !string.IsNullOrEmpty(azureAiConfig.Endpoint))
+// Register BlobServiceClient for Native Document PII API
+var storageConfig = builder.Configuration.GetSection("AzureStorage").Get<AzureStorageOptions>();
+
+if (storageConfig != null && !string.IsNullOrEmpty(storageConfig.ConnectionString))
 {
-    if (azureAiConfig.UseAzureIdentity)
+    BlobServiceClient blobServiceClient;
+    
+    if (storageConfig.UseAzureIdentity)
     {
-        // Use Azure Identity (Managed Identity, DefaultAzureCredential)
-        var credential = new DefaultAzureCredential();
-        var openAiClient = new OpenAI.OpenAIClient(new System.ClientModel.ApiKeyCredential("placeholder"), 
-            new OpenAI.OpenAIClientOptions { Endpoint = new Uri(azureAiConfig.Endpoint) });
-        builder.Services.AddSingleton<IChatClient>(new OpenAIChatClientWrapper(openAiClient, azureAiConfig.DeploymentName));
-    }
-    else if (!string.IsNullOrEmpty(azureAiConfig.ApiKey))
-    {
-        // Use API Key for Azure OpenAI
-        var openAiClient = new OpenAI.OpenAIClient(new System.ClientModel.ApiKeyCredential(azureAiConfig.ApiKey), 
-            new OpenAI.OpenAIClientOptions { Endpoint = new Uri(azureAiConfig.Endpoint) });
-        builder.Services.AddSingleton<IChatClient>(new OpenAIChatClientWrapper(openAiClient, azureAiConfig.DeploymentName));
+        // Extract account name from connection string to build endpoint URL
+        var accountName = ExtractStorageAccountName(storageConfig.ConnectionString);
+        if (!string.IsNullOrEmpty(accountName))
+        {
+            var blobEndpoint = new Uri($"https://{accountName}.blob.core.windows.net");
+            blobServiceClient = new BlobServiceClient(blobEndpoint, new DefaultAzureCredential());
+        }
+        else
+        {
+            // Fallback to connection string if account name cannot be extracted
+            blobServiceClient = new BlobServiceClient(storageConfig.ConnectionString);
+        }
     }
     else
     {
-        // Fallback to a simple chat client for development/testing
-        builder.Services.AddSingleton<IChatClient>(new SimpleChatClient());
+        blobServiceClient = new BlobServiceClient(storageConfig.ConnectionString);
     }
+
+    builder.Services.AddSingleton(blobServiceClient);
+
+    // Register HttpClient for Native Document PII Service
+    builder.Services.AddHttpClient<INativeDocumentPiiService, NativeDocumentPiiService>();
+
+    // Register Native Document PII service
+    builder.Services.AddScoped<INativeDocumentPiiService, NativeDocumentPiiService>();
 }
 else
 {
-    // Fallback to a simple chat client for development/testing
-    builder.Services.AddSingleton<IChatClient>(new SimpleChatClient());
+    throw new InvalidOperationException(
+        "Azure Storage is not configured. Native Document PII API requires Azure Blob Storage. " +
+        "Please configure AzureStorage:ConnectionString in appsettings.json or environment variables.");
 }
 
-// Register PII Redaction Service
-builder.Services.AddScoped<IPiiRedactionService, PiiRedactionService>();
+// Helper method to extract storage account name from connection string
+static string? ExtractStorageAccountName(string connectionString)
+{
+    try
+    {
+        var parts = connectionString.Split(';');
+        var accountNamePart = parts.FirstOrDefault(p => p.StartsWith("AccountName=", StringComparison.OrdinalIgnoreCase));
+        return accountNamePart?.Split('=')[1];
+    }
+    catch
+    {
+        return null;
+    }
+}
 
 var app = builder.Build();
 
