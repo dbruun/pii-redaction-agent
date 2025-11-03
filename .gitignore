@@ -80,7 +80,6 @@ _ReSharper*/
 PublishProfiles/
 
 # Sensitive configuration and secrets
-appsettings.Development.json
 appsettings.*.json
 !appsettings.json
 **/appsettings.local.json
