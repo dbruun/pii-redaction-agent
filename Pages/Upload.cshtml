@@ -100,8 +100,12 @@
 
                 <div class="mt-3">
                     <form method="post" asp-page-handler="Download">
-                        <input type="hidden" name="redactedText" value="@Model.DocumentResult.RedactedText" />
                         <input type="hidden" name="originalFileName" value="@Model.DocumentResult.OriginalFileName" />
+                        <input type="hidden" name="fileExtension" value="@Model.DocumentResult.FileExtension" />
+                        @if (Model.DocumentResult.RedactedDocumentBytes != null)
+                        {
+                            <input type="hidden" name="redactedDocumentBytesBase64" value="@Convert.ToBase64String(Model.DocumentResult.RedactedDocumentBytes)" />
+                        }
                         <button type="submit" class="btn btn-success btn-lg">
                             <i class="bi bi-download"></i> Download Redacted Document
                         </button>

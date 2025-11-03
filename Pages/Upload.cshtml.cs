@@ -75,19 +75,37 @@ public class UploadModel : PageModel
         }
     }
 
-    public IActionResult OnPostDownload(string redactedText, string originalFileName)
+    public IActionResult OnPostDownload(string originalFileName, string fileExtension, string? redactedDocumentBytesBase64)
     {
-        if (string.IsNullOrEmpty(redactedText))
+        try
         {
+            // Prefer binary data if available (for PDF, DOCX, and TXT from Native Document PII API)
+            if (!string.IsNullOrEmpty(redactedDocumentBytesBase64))
+            {
+                var bytes = Convert.FromBase64String(redactedDocumentBytesBase64);
+                
+                // Determine content type based on file extension
+                var contentType = fileExtension.ToLowerInvariant() switch
+                {
+                    ".pdf" => "application/pdf",
+                    ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ".txt" => "text/plain",
+                    _ => "application/octet-stream"
+                };
+                
+                // Generate output filename based on original
+                var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(originalFileName);
+                var fileName = $"{fileNameWithoutExtension}_REDACTED_{DateTime.UtcNow:yyyyMMddHHmmss}{fileExtension}";
+
+                return File(bytes, contentType, fileName);
+            }
+
             return RedirectToPage();
         }
-
-        var bytes = Encoding.UTF8.GetBytes(redactedText);
-        
-        // Generate output filename based on original
-        var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(originalFileName);
-        var fileName = $"{fileNameWithoutExtension}_REDACTED_{DateTime.UtcNow:yyyyMMddHHmmss}.txt";
-
-        return File(bytes, "text/plain", fileName);
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error downloading redacted document");
+            return RedirectToPage();
+        }
     }
 }

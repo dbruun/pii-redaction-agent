@@ -82,6 +82,7 @@ PublishProfiles/
 # Sensitive configuration and secrets
 appsettings.*.json
 !appsettings.json
+appsettings.Development.json
 **/appsettings.local.json
 **/secrets.json
 local.settings.json
@@ -114,3 +115,4 @@ yarn-error.log*
 
 # Docker
 docker-compose.override.yml
+appsettings.Development.json

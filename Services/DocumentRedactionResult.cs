@@ -23,4 +23,10 @@ public class DocumentRedactionResult
     public List<PiiEntity> DetectedEntities { get; set; } = new();
     public DateTime ProcessedAt { get; set; } = DateTime.UtcNow;
     public long FileSizeBytes { get; set; }
+    
+    /// <summary>
+    /// Binary content of the redacted document (for PDF, DOCX, or TXT files)
+    /// Used for direct file download
+    /// </summary>
+    public byte[]? RedactedDocumentBytes { get; set; }
 }

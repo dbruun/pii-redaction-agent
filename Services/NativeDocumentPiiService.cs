@@ -81,13 +81,11 @@ public class NativeDocumentPiiService : INativeDocumentPiiService
         string fileName, 
         CancellationToken cancellationToken)
     {
-        // Get source container
+        // Get source container (assumes container already exists)
         var sourceContainer = _blobServiceClient.GetBlobContainerClient(_storageOptions.SourceContainerName);
-        await sourceContainer.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
 
-        // Get target container
+        // Get target container (assumes container already exists)
         var targetContainer = _blobServiceClient.GetBlobContainerClient(_storageOptions.TargetContainerName);
-        await targetContainer.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
 
         // Upload document with unique name
         var blobName = $"{Guid.NewGuid()}/{fileName}";
@@ -96,42 +94,110 @@ public class NativeDocumentPiiService : INativeDocumentPiiService
         documentStream.Position = 0;
         await blobClient.UploadAsync(documentStream, overwrite: true, cancellationToken: cancellationToken);
 
-        // Generate SAS URLs
-        var sourceSasUrl = GenerateSasUrl(blobClient, BlobSasPermissions.Read);
-        var targetContainerSasUrl = GenerateContainerSasUrl(targetContainer, BlobContainerSasPermissions.Write | BlobContainerSasPermissions.List);
+        // Generate SAS URLs (supports both Entra ID and Account Key)
+        var sourceSasUrl = await GenerateBlobSasUrlAsync(blobClient, BlobSasPermissions.Read, cancellationToken);
+        var targetContainerSasUrl = await GenerateContainerSasUrlAsync(targetContainer, BlobContainerSasPermissions.Write | BlobContainerSasPermissions.List, cancellationToken);
+
+        _logger.LogInformation("Generated SAS URLs - Source: {SourceLength} chars, Target: {TargetLength} chars", 
+            sourceSasUrl.Length, targetContainerSasUrl.Length);
 
         return (sourceSasUrl, targetContainerSasUrl);
     }
 
-    private string GenerateSasUrl(BlobClient blobClient, BlobSasPermissions permissions)
+    private async Task<string> GenerateBlobSasUrlAsync(BlobClient blobClient, BlobSasPermissions permissions, CancellationToken cancellationToken)
     {
-        var sasBuilder = new BlobSasBuilder
+        if (_storageOptions.UseAzureIdentity)
         {
-            BlobContainerName = blobClient.BlobContainerName,
-            BlobName = blobClient.Name,
-            Resource = "b",
-            StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5),
-            ExpiresOn = DateTimeOffset.UtcNow.AddHours(2)
-        };
-        sasBuilder.SetPermissions(permissions);
+            // Use User Delegation SAS (works with Entra ID/Managed Identity)
+            // Note: User delegation key expiry must be within 7 days
+            var userDelegationKey = await _blobServiceClient.GetUserDelegationKeyAsync(
+                startsOn: DateTimeOffset.UtcNow.AddMinutes(-5),
+                expiresOn: DateTimeOffset.UtcNow.AddHours(48),
+                cancellationToken: cancellationToken);
 
-        var sasToken = blobClient.GenerateSasUri(sasBuilder);
-        return sasToken.ToString();
+            var sasBuilder = new BlobSasBuilder
+            {
+                BlobContainerName = blobClient.BlobContainerName,
+                BlobName = blobClient.Name,
+                Resource = "b",
+                StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5),
+                ExpiresOn = DateTimeOffset.UtcNow.AddHours(48),
+                Protocol = SasProtocol.Https  // Enforce HTTPS only
+            };
+            sasBuilder.SetPermissions(permissions);
+
+            var sasToken = sasBuilder.ToSasQueryParameters(userDelegationKey.Value, blobClient.AccountName);
+            var sasUri = new UriBuilder(blobClient.Uri)
+            {
+                Query = sasToken.ToString()
+            };
+
+            _logger.LogDebug("Generated User Delegation SAS URL for blob: {BlobName}", blobClient.Name);
+            return sasUri.ToString();
+        }
+        else
+        {
+            // Use Account Key SAS (traditional method)
+            var sasBuilder = new BlobSasBuilder
+            {
+                BlobContainerName = blobClient.BlobContainerName,
+                BlobName = blobClient.Name,
+                Resource = "b",
+                StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5),
+                ExpiresOn = DateTimeOffset.UtcNow.AddHours(48)
+            };
+            sasBuilder.SetPermissions(permissions);
+
+            var sasUri = blobClient.GenerateSasUri(sasBuilder);
+            return sasUri.ToString();
+        }
     }
 
-    private string GenerateContainerSasUrl(BlobContainerClient containerClient, BlobContainerSasPermissions permissions)
+    private async Task<string> GenerateContainerSasUrlAsync(BlobContainerClient containerClient, BlobContainerSasPermissions permissions, CancellationToken cancellationToken)
     {
-        var sasBuilder = new BlobSasBuilder
+        if (_storageOptions.UseAzureIdentity)
         {
-            BlobContainerName = containerClient.Name,
-            Resource = "c",
-            StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5),
-            ExpiresOn = DateTimeOffset.UtcNow.AddHours(2)
-        };
-        sasBuilder.SetPermissions(permissions);
+            // Use User Delegation SAS (works with Entra ID/Managed Identity)
+            // Note: User delegation key expiry must be within 7 days
+            var userDelegationKey = await _blobServiceClient.GetUserDelegationKeyAsync(
+                startsOn: DateTimeOffset.UtcNow.AddMinutes(-5),
+                expiresOn: DateTimeOffset.UtcNow.AddHours(48),
+                cancellationToken: cancellationToken);
 
-        var sasToken = containerClient.GenerateSasUri(sasBuilder);
-        return sasToken.ToString();
+            var sasBuilder = new BlobSasBuilder
+            {
+                BlobContainerName = containerClient.Name,
+                Resource = "c",
+                StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5),
+                ExpiresOn = DateTimeOffset.UtcNow.AddHours(48),
+                Protocol = SasProtocol.Https  // Enforce HTTPS only
+            };
+            sasBuilder.SetPermissions(permissions);
+
+            var sasToken = sasBuilder.ToSasQueryParameters(userDelegationKey.Value, containerClient.AccountName);
+            var sasUri = new UriBuilder(containerClient.Uri)
+            {
+                Query = sasToken.ToString()
+            };
+
+            _logger.LogDebug("Generated User Delegation SAS URL for container: {ContainerName}", containerClient.Name);
+            return sasUri.ToString();
+        }
+        else
+        {
+            // Use Account Key SAS (traditional method)
+            var sasBuilder = new BlobSasBuilder
+            {
+                BlobContainerName = containerClient.Name,
+                Resource = "c",
+                StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5),
+                ExpiresOn = DateTimeOffset.UtcNow.AddHours(48)
+            };
+            sasBuilder.SetPermissions(permissions);
+
+            var sasUri = containerClient.GenerateSasUri(sasBuilder);
+            return sasUri.ToString();
+        }
     }
 
     private async Task<string> SubmitAnalysisJobAsync(
@@ -300,10 +366,32 @@ public class NativeDocumentPiiService : INativeDocumentPiiService
             throw new InvalidOperationException("Redacted document not found in targets");
         }
 
-        // Download the redacted document
-        var blobClient = new BlobClient(new Uri(redactedDocLocation.Location));
+        // Download the redacted document as binary data (supports PDF, DOCX, TXT)
+        // The location URL from AI service might not include SAS, so we need to create a blob client with our credentials
+        _logger.LogInformation("Downloading redacted document from: {Location}", redactedDocLocation.Location);
+        
+        // Parse the URL to extract container and blob name
+        var uri = new Uri(redactedDocLocation.Location);
+        var pathParts = uri.AbsolutePath.TrimStart('/').Split('/', 2);
+        if (pathParts.Length != 2)
+        {
+            throw new InvalidOperationException($"Invalid blob URL format: {redactedDocLocation.Location}");
+        }
+        
+        var containerName = pathParts[0];
+        var blobName = Uri.UnescapeDataString(pathParts[1]);
+        
+        // Create a blob client using our authenticated BlobServiceClient
+        var container = _blobServiceClient.GetBlobContainerClient(containerName);
+        var blobClient = container.GetBlobClient(blobName);
+        
         var downloadResult = await blobClient.DownloadContentAsync(cancellationToken);
-        var redactedContent = downloadResult.Value.Content.ToString();
+        
+        // Store binary data for download
+        var redactedBytes = downloadResult.Value.Content.ToArray();
+        
+        // For display purposes, try to get text content (works for TXT, may not work for binary formats)
+        var redactedContent = TryGetTextContent(downloadResult.Value.Content, Path.GetExtension(originalFileName));
 
         // Download the JSON result for entity information
         var jsonResultLocation = document.Targets
@@ -335,7 +423,29 @@ public class NativeDocumentPiiService : INativeDocumentPiiService
             RedactedText = redactedContent,
             DetectedEntities = entities,
             FileSizeBytes = downloadResult.Value.Details.ContentLength,
-            ProcessedAt = DateTime.UtcNow
+            ProcessedAt = DateTime.UtcNow,
+            RedactedDocumentBytes = redactedBytes
         };
+    }
+
+    private string TryGetTextContent(BinaryData content, string extension)
+    {
+        try
+        {
+            // For text files, return the content directly
+            if (extension.Equals(".txt", StringComparison.OrdinalIgnoreCase))
+            {
+                return content.ToString();
+            }
+            
+            // For binary formats (PDF, DOCX), indicate that preview is not available
+            return $"Binary document redacted successfully. File type: {extension}\n\n" +
+                   $"Download the redacted document to view the content.\n" +
+                   $"Size: {content.ToArray().Length:N0} bytes";
+        }
+        catch
+        {
+            return "(Unable to display document content - download to view)";
+        }
     }
 }
